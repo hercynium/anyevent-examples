@@ -1,0 +1,178 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use Data::Dumper;
+use AnyEvent::Socket;
+use AnyEvent::Handle;
+
+
+my $first_port = 5555;
+
+our %SERVERS;
+our %CLIENTS;
+our %ACTIONS;
+
+start_server( '127.0.0.1', 5555 );
+
+AnyEvent->condvar->recv;
+
+sub start_server {
+  my ($s_host, $s_port) = @_;
+
+  my $srv_id = "$s_host:$s_port";
+  print "* starting server on $srv_id\n";
+
+  my $guard = tcp_server( $s_host, $s_port,
+    sub {
+      my ($fh, $c_host, $c_port) = @_;
+
+      my $cli_id = "$c_host:$c_port";
+      my $info = {
+        srv_host => $s_host,
+        srv_port => $s_port,
+        srv_id   => $srv_id,
+        cli_host => $c_host,
+        cli_port => $c_port,
+        cli_id   => $cli_id,
+        log_id   => "from $cli_id on $srv_id",
+      };
+
+      accept_client( $fh, $info );
+    }
+  );
+
+  return unless $guard;
+
+  # keep the guard so we can stop this server later.
+  return $SERVERS{$srv_id} = $guard;
+}
+
+sub accept_client {
+  my ($fh, $info) = @_;
+
+  print "* accepted connection $info->{log_id}\n";
+
+  my $hd = AnyEvent::Handle->new(
+    fh       => $fh,
+    on_error => sub {
+      my ($hd, $is_fatal, $msg) = @_;
+
+      print "* closing connection $info->{log_id}: $msg\n";
+
+      $hd->destroy;
+    },
+    on_read => sub {
+      my ($hd, $buf) = @_;
+      $hd->push_read(
+        line => sub {
+          my ($hd, $line, $eol) = @_;
+          my ($cmd, @args) = split ' ', $line;
+
+          if ( my $act = $ACTIONS{lc $cmd} ) {
+            print "* command $cmd sent $info->{log_id} with args: "
+              . join(' ', @args) . "\n";
+
+            $act->($hd, $info, @args);
+          }
+          else {
+            print "* unknown command sent $info->{log_id}\n";
+            $hd->destroy;
+          }
+        }
+      );
+    },
+  );
+  # store the client's info for later.
+  $info->{hd} = $hd;
+  $CLIENTS{ $info->{cli_id} } = $info;
+}
+
+
+BEGIN {
+  %ACTIONS = (
+
+    # disconnect the client
+    'disco' => sub {
+      my ($hd, $info, @args) = @_;
+      $hd->push_write("* You asked for it!\n");
+      $hd->push_shutdown;
+    },
+
+    # start up another tcp_server
+    'start' => sub {
+      my ($hd, $info, $host, $port) = @_;
+      ($host, $port) = split ':', $host unless $port;
+      unless ( start_server( $host, $port ) ) {
+        $hd->push_write("* Error: couldn't start server on $host:$port\n");
+        return;
+      }
+      $hd->push_write("* Started server on $host:$port\n");
+    },
+
+    # stop a running server
+    'stop' => sub {
+      my ($hd, $info, @host_port) = @_;
+      my $srv_id = join ':', grep { defined } @host_port;
+      if ( delete $SERVERS{ $srv_id } ) {
+        $hd->push_write("OK\n");
+        print "* stopping server on $srv_id\n";
+        return;
+      }
+      $hd->push_write("* Error: could not find server $srv_id\n");
+    },
+
+    # get a nickname for chatting
+    'nick' => sub {
+      my ($hd, $info, $nick) = @_;
+      unless ( $nick ) {
+        print "* removing nick from client $info->{cli_id}\n";
+        delete $info->{nick};
+        $hd->push_write("* Your nick has been removed\n");
+        return;
+      }
+      if ( my ($other) = grep { $_->{nick} and $nick eq $_->{nick} } values %CLIENTS ) {
+        $hd->push_write("* Sorry, the nick $nick is already taken by $other->{cli_id}\n");
+        return;
+      }
+      print "* setting nick for $info->{cli_id} to $nick\n";
+      $info->{nick} = $nick;
+      $hd->push_write("* You are now known as $nick\n");
+    },
+
+    # chat with a client on another socket, using their nickname.
+    'chat' => sub {
+      my ($hd, $info, $nick) = @_;
+      if ( my ($other) = grep { $nick eq $_->{nick} } values %CLIENTS ) {
+        my $o_hd = $other->{hd};
+
+        print "* $info->{cli_id} is now chatting with $other->{nick}\n";
+
+        $_->push_write("* Type bye to stop chatting\n> ") for ($hd, $o_hd);
+        setup_chat($hd, $o_hd);
+        setup_chat($o_hd, $hd);
+        return;
+      }
+
+      $hd->push_write("* Sorry, that nick was not found!\n");
+      print "* couldn't find a client named $nick for $info->{cli_id}\n";
+    },
+  );
+}
+
+sub setup_chat {
+  my ($a_hd, $b_hd) = @_;
+  my @read_args; @read_args = (
+    line => sub {
+      my ($hd, $line, $eol) = @_;
+      if ( $line eq 'bye' ) {
+        $hd->push_write("* You are no longer chatting\n");
+        $b_hd->push_write("* your chat partner has hung up on you\n");
+        return;
+      }
+      $hd->push_write("> ");
+      $b_hd->push_write("\n$_[1]\n> ");
+      $hd->push_read(@read_args);
+    }
+  );
+  $a_hd->push_read(@read_args);
+}

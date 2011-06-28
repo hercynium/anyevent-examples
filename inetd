@@ -1,0 +1,41 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use AnyEvent::Socket;
+use AnyEvent::Handle;
+use AnyEvent::Util;
+
+our %SERVICES = (
+  6789 => ['/opt/local/bin/fortune'],
+  9876 => ['/opt/local/bin/cowsay'],
+  1337 => ['/usr/bin/bc', '-i'],
+);
+
+
+for my $srv_port ( keys %SERVICES ) {
+  tcp_server( undef, $srv_port,
+    sub {
+      my ($cli_fh, $cli_host, $cli_port) = @_;
+
+      my $cmd_str = join ' ', @{ $SERVICES{$srv_port} };
+      print "* accepted connection on $srv_port from $cli_host:$cli_port for $cmd_str\n";
+
+      my $pid;
+      my $cv = run_cmd(
+        $SERVICES{$srv_port},
+        '>'  => $cli_fh,
+        '<'  => $cli_fh,
+        '2>' => $cli_fh,
+        '$$' => \$pid
+      );
+      $cv->cb(
+        sub {
+          my $exit_code = shift->recv;
+          print "* $cmd_str as pid $pid exited with code $exit_code\n";
+        }
+      );
+    }
+  );
+}
+
+AnyEvent->condvar->recv;

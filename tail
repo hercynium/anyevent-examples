@@ -1,0 +1,68 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use AnyEvent::Handle;
+use File::ReadBackwards;
+
+### This script demonstrates an anyevent-equivalent
+###   of tail -f <file1> <file2>
+### Please note, this is *not* like tail -F. If the file
+###   is moved/deleted/replaced, it will just stop tailing
+###   it. Supporting that *is* do-able, though!
+
+$|++; # autoflush STDOUT
+
+our $INIT_TAIL_LINES     = 5;          # like tail -n X
+our $HAVE_MULTIPLE_FILES = @ARGV - 1;  # more than one file to tail?
+our $LAST_FILE_READ      = '';         # track the last file read from
+
+
+tail_files( @ARGV );
+
+# Force AE to start an event loop.
+AnyEvent->condvar->recv;
+
+
+sub tail_files {
+  my @files = @_;
+
+  for my $filename ( @files ) {
+
+    # just like tail, output starting from the last X lines from the end
+    my $frb = File::ReadBackwards->new( $filename );
+    $frb->readline for 0 .. $INIT_TAIL_LINES - 1;
+
+    # get_handle returns a handle with the pos set to the
+    # beginning of the first line we want to output.
+    init_tailer( $frb->get_handle, $filename );
+  }
+}
+
+sub init_tailer {
+  my ($fh, $filename) = @_;
+
+  my $hdl; $hdl = AnyEvent::Handle->new(
+    fh      => $fh,
+    on_read => sub {
+      my ($hdl) = @_;
+      $hdl->push_read(
+        line => sub {
+          my ($hdl, $line, $eof) = @_;
+          print "\n==> $filename <==\n"
+            if $HAVE_MULTIPLE_FILES and $LAST_FILE_READ ne $filename;
+          $LAST_FILE_READ = $filename;
+          print $line, $eof;
+        }
+      );
+    },
+    on_eof => sub {
+      # must re-initialize the original handle to continue tailing.
+      # the timer isn't necessary, but just to be a good citizen.
+      my $t; $t = AnyEvent->timer( after => 1, cb => sub {
+        $t = undef;
+        $hdl = init_tailer( $fh, $filename );
+      });
+    },
+  );
+}
+

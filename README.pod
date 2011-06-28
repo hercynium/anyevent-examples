@@ -13,4 +13,5 @@ eventually like to include well-written, useful modules that provide small,
 focused examples of various techniques for using it better and more
 effectively.
 
-
+As soon as possible, I will clean up this repository and add a few other demos
+I left out of the presentation.

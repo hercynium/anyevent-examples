@@ -1,0 +1,16 @@
+=head1 NAME
+
+AnyEvent::Examples
+
+=head1 DESCRIPTION
+
+This is inteded to become a collection of code that not only demonstrates the
+functionality available in AnyEvent, but also how one should use that
+functionality in real-world applications.
+
+At first there will be simply several small, stand-alone scripts, but I'd
+eventually like to include well-written, useful modules that provide small,
+focused examples of various techniques for using it better and more
+effectively.
+
+
